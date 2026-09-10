@@ -6,7 +6,11 @@ export async function getRoute(
   detour,
   unknownPolicy,
   fromCoords,
-  toCoords
+  toCoords,
+  // Passed by the caller so a request superseded by a newer one can be
+  // cancelled rather than left to finish and be thrown away. Routing is the
+  // expensive endpoint -- every abandoned call still rebuilds the graph.
+  signal
 ) {
   if (!fromCoords || !toCoords) {
     throw new Error('Origin and destination coordinates are required')
@@ -16,6 +20,7 @@ export async function getRoute(
 
   const response = await fetch(`${BASE_URL}/api/v1/route`, {
     method: 'POST',
+    signal,
     headers: {
       'Content-Type': 'application/json',
     },

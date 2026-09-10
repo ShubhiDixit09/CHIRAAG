@@ -8,36 +8,58 @@ import { DetourControl } from './components/DetourControl'
 import { UnknownPolicy as UnknownPolicyControl } from './components/UnknownPolicy'
 import { EvidencePanel } from './components/EvidencePanel'
 import { MapView } from './components/MapView'
+import { MapSkeleton } from './components/MapSkeleton'
+import { useSheetDrag } from './lib/useSheetDrag'
 
 
-// Known-good pairs inside the ingested network, with coordinates baked in so
-// they never depend on a geocoding round-trip. Verify each against
-// find-demo-routes.ps1 before relying on them.
+// Known-good pairs inside the surveyed network, with coordinates baked in so
+// they never depend on a geocoding round-trip.
+//
+// These were selected by evaluating all 92 landmark pairs in the survey area
+// against the live scores: each one below produces a genuinely different and
+// measurably safer route, with enough evidence coverage to stand up to "how
+// much of this do you actually know?".
+//
+// The previous set was chosen before the network was rescored. Two of its
+// three journeys had since become identical to the shortest path -- India
+// Gate to Connaught Place returned 0 m avoided at 98% coverage, meaning the
+// shortest route there is genuinely already the best one. Good result,
+// terrible demo. Re-measure this list whenever the scores change.
+//
+//   India Gate -> Mandi House       451 m avoided,  +28 m,  74% observed
+//   Secretariat -> Gole Market      327 m avoided, +146 m,  60% observed
+//   Janpath -> Bangla Sahib         245 m avoided,  +68 m,  59% observed
 const PRESETS = [
   {
-    label: 'India Gate \u2192 CP',
+    label: 'India Gate \u2192 Mandi House',
     from: 'India Gate',
     fromCoords: { lat: 28.612945, lon: 77.229466 },
-    to: 'Connaught Place',
-    toCoords: { lat: 28.631540, lon: 77.216742 },
+    to: 'Mandi House',
+    toCoords: { lat: 28.6258, lon: 77.2344 },
   },
   {
-    label: 'Secretariat \u2192 Jantar Mantar',
+    label: 'Secretariat \u2192 Gole Market',
     from: 'Central Secretariat',
     fromCoords: { lat: 28.6152, lon: 77.2122 },
-    to: 'Jantar Mantar',
-    toCoords: { lat: 28.6271, lon: 77.2166 },
+    to: 'Gole Market',
+    toCoords: { lat: 28.6335, lon: 77.2065 },
   },
   {
-    label: 'Museum \u2192 Patel Chowk',
-    from: 'National Museum',
-    fromCoords: { lat: 28.6118, lon: 77.2194 },
-    to: 'Patel Chowk',
-    toCoords: { lat: 28.6236, lon: 77.2144 },
+    label: 'Janpath \u2192 Bangla Sahib',
+    from: 'Janpath',
+    fromCoords: { lat: 28.6242, lon: 77.2185 },
+    to: 'Bangla Sahib',
+    toCoords: { lat: 28.6262, lon: 77.2090 },
   },
 ]
 
 const DEFAULT_JOURNEY = PRESETS[0]
+
+// A range input emits a value for every pixel of the drag. Without a delay,
+// sliding the hour control from midday to midnight fires a dozen route
+// requests, each one rebuilding the street graph server-side. Long enough to
+// swallow a drag, short enough that a single click still feels immediate.
+const ROUTE_DEBOUNCE_MS = 300
 
 
 export default function App() {
@@ -64,39 +86,61 @@ export default function App() {
   const searchTimer = useRef(null)
   const [refreshKey, setRefreshKey] = useState(0)
 
+  // Phones only -- the CSS keeps the form permanently open above 720px. On a
+  // small screen the search card and the results sheet between them leave a
+  // sliver of map, and the map is the product, so the form collapses to a bar
+  // showing the current journey until someone wants to change it.
+  const [searchOpen, setSearchOpen] = useState(false)
+
+  // Drag-to-collapse for the results sheet. Inert above 720px -- the class it
+  // applies has no styles outside the mobile block.
+  const sheet = useSheetDrag()
+
   useEffect(() => {
     if (!journey.fromCoords || !journey.toCoords) return
 
     let active = true
+    const controller = new AbortController()
 
+    // Shown straight away rather than after the debounce, so dragging a
+    // slider reads as responsive even though the request has not left yet.
     setLoading(true)
     setError(null)
 
-    getRoute(
-      hour,
-      detour,
-      policy,
-      journey.fromCoords,
-      journey.toCoords
-    )
-      .then(route => {
-        if (!active) return
+    const timer = setTimeout(() => {
+      getRoute(
+        hour,
+        detour,
+        policy,
+        journey.fromCoords,
+        journey.toCoords,
+        controller.signal
+      )
+        .then(route => {
+          if (!active) return
 
-        setData(route)
-        setSelectedRoute('safe')
-      })
-      .catch(error => {
-        console.error(error)
-        // The API explains itself -- out-of-area, no path, and so on. Show
-        // that instead of a generic banner.
-        if (active) setError(error.message)
-      })
-      .finally(() => {
-        if (active) setLoading(false)
-      })
+          setData(route)
+          setSelectedRoute('safe')
+        })
+        .catch(error => {
+          // A cancelled request is not a failure -- the user simply moved the
+          // slider again before this one came back.
+          if (error.name === 'AbortError') return
+
+          console.error(error)
+          // The API explains itself -- out-of-area, no path, and so on. Show
+          // that instead of a generic banner.
+          if (active) setError(error.message)
+        })
+        .finally(() => {
+          if (active) setLoading(false)
+        })
+    }, ROUTE_DEBOUNCE_MS)
 
     return () => {
       active = false
+      clearTimeout(timer)
+      controller.abort()
     }
   }, [hour, detour, policy, journey, refreshKey])
 
@@ -107,6 +151,7 @@ export default function App() {
     setToSuggestions([])
     setActiveSearch(null)
     setSelectedEvidence(null)
+    setSearchOpen(false)
 
     setJourney({
       from: preset.from,
@@ -281,6 +326,10 @@ export default function App() {
           lon: toLon,
         },
       })
+
+      // Collapse on success only. If the geocode failed the form stays open,
+      // because the next thing the user needs is to correct what they typed.
+      setSearchOpen(false)
     } catch (error) {
       console.error(error)
       setError(error.message)
@@ -289,7 +338,7 @@ export default function App() {
   }
 
   return <main className="app-shell">
-    {data && <MapView
+    {data ? <MapView
       data={data}
       selected={selectedRoute}
       selectedSegment={selectedEvidence?.road_id ?? null}
@@ -298,9 +347,34 @@ export default function App() {
       toCoords={journey.toCoords}
       fromName={journey.from}
       toName={journey.to}
-    />}
+    /> : !error && <MapSkeleton />}
     <Header />
-    <form className="route-search" onSubmit={findRoute} aria-label="Find a safer route">
+
+    {/* Hidden above 720px, where the form is always visible anyway. */}
+    <button
+      type="button"
+      className="search-toggle"
+      aria-expanded={searchOpen}
+      aria-controls="route-search-form"
+      onClick={() => setSearchOpen(open => !open)}
+    >
+      <span className="search-toggle-route">
+        <b>{journey.from}</b>
+        <i aria-hidden="true">&rarr;</i>
+        <b>{journey.to}</b>
+      </span>
+
+      <span className="search-toggle-action">
+        {searchOpen ? 'Close' : 'Change'}
+      </span>
+    </button>
+
+    <form
+      id="route-search-form"
+      className={searchOpen ? 'route-search open' : 'route-search'}
+      onSubmit={findRoute}
+      aria-label="Find a safer route"
+    >
       <div
         style={{
           display: 'flex',
@@ -477,47 +551,82 @@ export default function App() {
       </div>
       <button className="find-route" type="submit">Find safer route <span>&rarr;</span></button>
     </form>
-    <aside className="route-panel">
+    <aside
+      className={`route-panel ${sheet.className}`.trim()}
+      style={sheet.style}
+    >
+      {/* Hidden above 720px. Drag it down to get the map back, up to read
+          the detail; a tap toggles, for people who don't think to drag. */}
+      <button
+        type="button"
+        className="sheet-handle"
+        aria-expanded={!sheet.collapsed}
+        aria-label={
+          sheet.collapsed ? 'Expand route details' : 'Collapse route details'
+        }
+        {...sheet.handleProps}
+      />
       {loading && <div className="quiet-loading">Updating route <i /></div>}
       {error && (
         <div className="quiet-error">
           {error}
         </div>
       )}
-      {data && <>
+      {data && (() => {
+        const coverage = Math.min(
+          data.baseline_route.metrics.coverage_ratio ?? 0,
+          data.chiraag_route.metrics.coverage_ratio ?? 0
+        )
+        const coveragePct = Math.round(coverage * 100)
+
+        // The shortest path was already the least-exposed one, so there is no
+        // safer alternative to offer. Saying that plainly beats rendering
+        // "0 m less unlit road for only 0 m extra", which reads as a failure
+        // when it is actually a finding.
+        const noSaferOption =
+          data.evidence_summary.unlit_meters_avoided <= 0 &&
+          data.evidence_summary.extra_distance_m <= 0
+
+        return <>
         <div className="recommendation">
           <p className="eyebrow">CHIRAAG RECOMMENDS</p>
           <div className="recommendation-title">
-            Safer route
+            {noSaferOption ? 'Shortest route' : 'Safer route'}
           </div>
           <div className="route-duration">
             {Math.round(data.chiraag_route.metrics.total_length_m)} m
           </div>
 
-          <HeroMetric
-            delta={{
-              extra_m: data.evidence_summary.extra_distance_m,
-              extra_pct:
-                data.baseline_route.metrics.total_length_m > 0
-                  ? (
-                    (data.evidence_summary.extra_distance_m /
-                      data.baseline_route.metrics.total_length_m) *
-                    100
-                  ).toFixed(1)
-                  : 0,
-              dark_avoided_m: data.evidence_summary.unlit_meters_avoided,
-            }}
-            coverage={Math.min(
-              data.baseline_route.metrics.coverage_ratio ?? 0,
-              data.chiraag_route.metrics.coverage_ratio ?? 0
-            )}
-          />
+          {noSaferOption ? (
+            <div className="metric-caveat" style={{ marginTop: 12 }}>
+              {coveragePct > 0
+                ? `No detour within your ${detour}% budget lowers unlit exposure here, so the shortest route is also the least exposed. We have lighting evidence on ${coveragePct}% of it.`
+                : `We have no lighting evidence on this route, so CHIRAAG will not claim one way is safer than another. This is the shortest path.`}
+            </div>
+          ) : (
+            <HeroMetric
+              delta={{
+                extra_m: data.evidence_summary.extra_distance_m,
+                extra_pct:
+                  data.baseline_route.metrics.total_length_m > 0
+                    ? (
+                      (data.evidence_summary.extra_distance_m /
+                        data.baseline_route.metrics.total_length_m) *
+                      100
+                    ).toFixed(1)
+                    : 0,
+                dark_avoided_m: data.evidence_summary.unlit_meters_avoided,
+              }}
+              coverage={coverage}
+            />
+          )}
           <button className="use-route" onClick={() => setSelectedRoute('safe')}>Use this route <span>&rarr;</span></button>
         </div>
         <RouteComparison data={data} selected={selectedRoute} onSelect={setSelectedRoute} />
         <div className="compact-controls"><TimeControl hour={hour} onChange={setHour} /><DetourControl value={detour} onChange={setDetour} /></div>
         <UnknownPolicyControl policy={policy} onChange={setPolicy} />
-      </>}
+        </>
+      })()}
       <div className="panel-footer"><span className="status-indicator">{USE_MOCK_DATA ? 'LOCAL DEMO DATA' : 'LIVE DATA'}</span><span>Click a street for proof</span></div>
     </aside>
     <EvidencePanel evidence={selectedEvidence} onClose={() => setSelectedEvidence(null)} onAudited={handleAudited} />

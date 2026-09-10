@@ -27,8 +27,16 @@ class RouteRequest(BaseModel):
 
     unknown_policy: str = Field(
         default="neutral",
-        pattern="^(avoid|neutral|show_gaps)$",
-        description="How to handle road segments with insufficient safety evidence",
+        # show_gaps is a deprecated alias for neutral, kept so that a front end
+        # deployed before this change keeps working instead of getting a 422
+        # during the window where the two halves are on different versions.
+        pattern="^(avoid|neutral|assume_typical|show_gaps)$",
+        description=(
+            "Stance toward streets with no lighting evidence. "
+            "neutral: distance only, no assumption. "
+            "assume_typical: scored as darkly as the average observed street. "
+            "avoid: heavily penalised, taken only when unavoidable."
+        ),
     )
 
     hour: int = Field(

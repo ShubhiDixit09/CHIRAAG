@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 
@@ -197,6 +197,29 @@ export function MapView({
           'line-width': 2.4,
           'line-opacity': 0.95,
           'line-dasharray': [0.9, 1.5],
+        },
+        layout: {
+          'line-cap': 'butt',
+        },
+      })
+
+      // Stretches we have positive evidence are mostly unlit. Without this
+      // the whole argument lives in the drawer: the map shows two coloured
+      // lines and no reason to prefer either. Drawn over the route so the
+      // route colour still reads underneath.
+      //
+      // Unknown segments carry dark_fraction -1, so they cannot match here --
+      // "we have not looked" never renders as darkness.
+      m.addLayer({
+        id: 'segments-dark',
+        type: 'line',
+        source: 'segments',
+        filter: ['>', ['get', 'dark_fraction'], 0.5],
+        paint: {
+          'line-color': '#151b23',
+          'line-width': 3.4,
+          'line-opacity': 0.92,
+          'line-dasharray': [2, 1.1],
         },
         layout: {
           'line-cap': 'butt',
@@ -436,33 +459,14 @@ export function MapView({
           : 'Shortest route selected'}
       </div>
 
-      <div
-        style={{
-          position: 'absolute',
-          top: 16,
-          left: 16,
-          zIndex: 10,
-          display: 'flex',
-          gap: 6,
-          background: 'rgba(255,255,255,0.96)',
-          padding: 4,
-          borderRadius: 8,
-          boxShadow: '0 2px 10px rgba(0,0,0,0.14)',
-        }}
-      >
+      {/* Styled in globals.css rather than inline, so the mobile layout can
+          move it -- an inline style cannot be overridden by a media query. */}
+      <div className="basemap-toggle">
         <button
           type="button"
+          className={satellite ? '' : 'active'}
           onClick={() => {
             if (satellite) switchStyle()
-          }}
-          style={{
-            border: 'none',
-            borderRadius: 6,
-            padding: '7px 11px',
-            background: !satellite ? '#222522' : 'transparent',
-            color: !satellite ? '#fff' : '#222522',
-            fontWeight: 700,
-            cursor: 'pointer',
           }}
         >
           Map
@@ -470,17 +474,9 @@ export function MapView({
 
         <button
           type="button"
+          className={satellite ? 'active' : ''}
           onClick={() => {
             if (!satellite) switchStyle()
-          }}
-          style={{
-            border: 'none',
-            borderRadius: 6,
-            padding: '7px 11px',
-            background: satellite ? '#222522' : 'transparent',
-            color: satellite ? '#fff' : '#222522',
-            fontWeight: 700,
-            cursor: 'pointer',
           }}
         >
           Satellite
@@ -494,6 +490,10 @@ export function MapView({
 
         <span>
           <i className="legend-short" /> Shortest
+        </span>
+
+        <span>
+          <i className="legend-dark" /> Unlit stretch
         </span>
 
         <span>

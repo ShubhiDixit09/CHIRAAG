@@ -2,6 +2,20 @@ import math
 import networkx as nx
 
 
+# How dark to assume an unobserved street is under the "assume_typical"
+# policy. This is not a guess: it is the length-weighted mean dark fraction
+# of the streets we HAVE observed in the survey area (30.5 km unlit out of
+# 123.8 km observed, ~0.25). Treating an unknown street as typical of its
+# neighbours is a defensible prior; treating it as fully lit is not.
+UNKNOWN_PRIOR_DARK_FRACTION = 0.25
+
+# Multiplier on lambda for the "avoid" policy. At the night weighting of
+# 0.65 this makes an unobserved street cost ~2.95x its length, enough to
+# route around it whenever any observed alternative exists, without making
+# it impassable when none does.
+AVOID_UNKNOWN_WEIGHT = 3.0
+
+
 def _dist(a, b) -> float:
 
     return math.hypot(a[0] - b[0], a[1] - b[1])
@@ -92,12 +106,16 @@ def _calculate_edge_weight(
     """
     Calculate routing cost for parallel edges.
 
-    Known/predicted segment:
+    Known segment:
         cost = distance + lambda * unlit exposure
 
-    Unknown segment:
-        neutral/show_gaps -> normal distance
-        avoid             -> additional penalty
+    Unknown segment -- three stances toward the missing evidence:
+        neutral        -> distance only; no assumption either way
+        assume_typical -> scored at the observed network's average darkness
+        avoid          -> heavily penalised, used only when unavoidable
+
+    "show_gaps" is accepted as a deprecated alias for neutral so that an
+    older deployed front end keeps working during a rollout.
     """
     best = float("inf")
 
@@ -127,9 +145,26 @@ def _calculate_edge_weight(
 
         if is_unknown:
             if unknown_policy == "avoid":
-                cost = length + (
-                    lam * (length + 500.0)
+                # Proportional to length, so a long unobserved road costs more
+                # than a short one. The previous formula added a flat 500 m,
+                # which punished a 20 m link ~18x and a 500 m road only ~2x --
+                # backwards, since the long road carries far more unknown
+                # exposure. Street networks split at every junction, so most
+                # segments are short and that made 'avoid' behave as 'forbid'.
+                cost = length * (
+                    1.0 + lam * AVOID_UNKNOWN_WEIGHT
                 )
+
+            elif unknown_policy == "assume_typical":
+                # Neither optimism nor prohibition: score the street as if it
+                # were as dark as the average observed street. A prior, stated
+                # openly, rather than a silent assumption that it is fine.
+                cost = length + (
+                    lam
+                    * UNKNOWN_PRIOR_DARK_FRACTION
+                    * length
+                )
+
             else:
                 cost = length
 
