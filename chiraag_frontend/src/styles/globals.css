@@ -722,6 +722,10 @@ input[type=range]::-moz-range-thumb {
     background: #575b58
 }
 
+.legend-dark {
+    border-top: 3px dashed #151b23
+}
+
 .legend-unknown {
     border-top: 3px dashed #6e746e
 }

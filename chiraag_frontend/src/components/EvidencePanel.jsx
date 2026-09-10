@@ -13,6 +13,10 @@ const Bar = ({ label, value }) => (
 const STATE_LABEL = {
   audited: 'Confirmed by a night audit',
   predicted: 'Inferred from street imagery',
+  // Cameras have been down this street and found no lamp. That is a positive
+  // observation of darkness, not a gap in the data, and it must not read as
+  // one in the drawer.
+  imaged_dark: 'Imagery available, no streetlights detected',
   unobserved: 'No imagery available',
 }
 
@@ -59,6 +63,7 @@ export function EvidencePanel({ evidence, onClose, onAudited }) {
   const longestGap = Math.round(evidence.longest_gap_m ?? 0)
 
   const audited = evidence.observation_state === 'audited'
+  const imagedDark = evidence.observation_state === 'imaged_dark'
 
   async function submitAudit() {
     if (rating === null) return
@@ -144,11 +149,13 @@ export function EvidencePanel({ evidence, onClose, onAudited }) {
             <p className="plain-reason">
               {audited
                 ? `Someone who walked this street rated it ${litPercent}% lit. Ground-truth ratings override our imagery estimate.`
-                : darkFraction > 0
-                  ? `About ${darkMetres} m of this ${length} m stretch falls outside the reach of any detected street light${
-                      hasGap ? `, the longest unbroken dark run being ${longestGap} m` : ''
-                    }.`
-                  : `Detected street lights cover this entire ${length} m stretch, so routing over it adds no unlit exposure.`}
+                : imagedDark
+                  ? `Street-level imagery covers this ${length} m stretch and no street light was detected anywhere along it, so CHIRAAG treats it as unlit. That is weaker evidence than a lamp we can see, so it is scored cautiously -- a night audit would settle it.`
+                  : darkFraction > 0
+                    ? `About ${darkMetres} m of this ${length} m stretch falls outside the reach of any detected street light${
+                        hasGap ? `, the longest unbroken dark run being ${longestGap} m` : ''
+                      }.`
+                    : `Detected street lights cover this entire ${length} m stretch, so routing over it adds no unlit exposure.`}
             </p>
 
             <Bar label="Lighting coverage" value={litPercent} />

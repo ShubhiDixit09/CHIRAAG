@@ -203,6 +203,29 @@ export function MapView({
         },
       })
 
+      // Stretches we have positive evidence are mostly unlit. Without this
+      // the whole argument lives in the drawer: the map shows two coloured
+      // lines and no reason to prefer either. Drawn over the route so the
+      // route colour still reads underneath.
+      //
+      // Unknown segments carry dark_fraction -1, so they cannot match here --
+      // "we have not looked" never renders as darkness.
+      m.addLayer({
+        id: 'segments-dark',
+        type: 'line',
+        source: 'segments',
+        filter: ['>', ['get', 'dark_fraction'], 0.5],
+        paint: {
+          'line-color': '#151b23',
+          'line-width': 3.4,
+          'line-opacity': 0.92,
+          'line-dasharray': [2, 1.1],
+        },
+        layout: {
+          'line-cap': 'butt',
+        },
+      })
+
       // Highlight for whichever street the drawer is showing.
       m.addLayer({
         id: 'segments-selected',
@@ -494,6 +517,10 @@ export function MapView({
 
         <span>
           <i className="legend-short" /> Shortest
+        </span>
+
+        <span>
+          <i className="legend-dark" /> Unlit stretch
         </span>
 
         <span>

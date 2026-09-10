@@ -39,6 +39,12 @@ const PRESETS = [
 
 const DEFAULT_JOURNEY = PRESETS[0]
 
+// A range input emits a value for every pixel of the drag. Without a delay,
+// sliding the hour control from midday to midnight fires a dozen route
+// requests, each one rebuilding the street graph server-side. Long enough to
+// swallow a drag, short enough that a single click still feels immediate.
+const ROUTE_DEBOUNCE_MS = 300
+
 
 export default function App() {
   const [hour, setHour] = useState(23)
@@ -68,35 +74,47 @@ export default function App() {
     if (!journey.fromCoords || !journey.toCoords) return
 
     let active = true
+    const controller = new AbortController()
 
+    // Shown straight away rather than after the debounce, so dragging a
+    // slider reads as responsive even though the request has not left yet.
     setLoading(true)
     setError(null)
 
-    getRoute(
-      hour,
-      detour,
-      policy,
-      journey.fromCoords,
-      journey.toCoords
-    )
-      .then(route => {
-        if (!active) return
+    const timer = setTimeout(() => {
+      getRoute(
+        hour,
+        detour,
+        policy,
+        journey.fromCoords,
+        journey.toCoords,
+        controller.signal
+      )
+        .then(route => {
+          if (!active) return
 
-        setData(route)
-        setSelectedRoute('safe')
-      })
-      .catch(error => {
-        console.error(error)
-        // The API explains itself -- out-of-area, no path, and so on. Show
-        // that instead of a generic banner.
-        if (active) setError(error.message)
-      })
-      .finally(() => {
-        if (active) setLoading(false)
-      })
+          setData(route)
+          setSelectedRoute('safe')
+        })
+        .catch(error => {
+          // A cancelled request is not a failure -- the user simply moved the
+          // slider again before this one came back.
+          if (error.name === 'AbortError') return
+
+          console.error(error)
+          // The API explains itself -- out-of-area, no path, and so on. Show
+          // that instead of a generic banner.
+          if (active) setError(error.message)
+        })
+        .finally(() => {
+          if (active) setLoading(false)
+        })
+    }, ROUTE_DEBOUNCE_MS)
 
     return () => {
       active = false
+      clearTimeout(timer)
+      controller.abort()
     }
   }, [hour, detour, policy, journey, refreshKey])
 
@@ -484,40 +502,61 @@ export default function App() {
           {error}
         </div>
       )}
-      {data && <>
+      {data && (() => {
+        const coverage = Math.min(
+          data.baseline_route.metrics.coverage_ratio ?? 0,
+          data.chiraag_route.metrics.coverage_ratio ?? 0
+        )
+        const coveragePct = Math.round(coverage * 100)
+
+        // The shortest path was already the least-exposed one, so there is no
+        // safer alternative to offer. Saying that plainly beats rendering
+        // "0 m less unlit road for only 0 m extra", which reads as a failure
+        // when it is actually a finding.
+        const noSaferOption =
+          data.evidence_summary.unlit_meters_avoided <= 0 &&
+          data.evidence_summary.extra_distance_m <= 0
+
+        return <>
         <div className="recommendation">
           <p className="eyebrow">CHIRAAG RECOMMENDS</p>
           <div className="recommendation-title">
-            Safer route
+            {noSaferOption ? 'Shortest route' : 'Safer route'}
           </div>
           <div className="route-duration">
             {Math.round(data.chiraag_route.metrics.total_length_m)} m
           </div>
 
-          <HeroMetric
-            delta={{
-              extra_m: data.evidence_summary.extra_distance_m,
-              extra_pct:
-                data.baseline_route.metrics.total_length_m > 0
-                  ? (
-                    (data.evidence_summary.extra_distance_m /
-                      data.baseline_route.metrics.total_length_m) *
-                    100
-                  ).toFixed(1)
-                  : 0,
-              dark_avoided_m: data.evidence_summary.unlit_meters_avoided,
-            }}
-            coverage={Math.min(
-              data.baseline_route.metrics.coverage_ratio ?? 0,
-              data.chiraag_route.metrics.coverage_ratio ?? 0
-            )}
-          />
+          {noSaferOption ? (
+            <div className="metric-caveat" style={{ marginTop: 12 }}>
+              {coveragePct > 0
+                ? `No detour within your ${detour}% budget lowers unlit exposure here, so the shortest route is also the least exposed. We have lighting evidence on ${coveragePct}% of it.`
+                : `We have no lighting evidence on this route, so CHIRAAG will not claim one way is safer than another. This is the shortest path.`}
+            </div>
+          ) : (
+            <HeroMetric
+              delta={{
+                extra_m: data.evidence_summary.extra_distance_m,
+                extra_pct:
+                  data.baseline_route.metrics.total_length_m > 0
+                    ? (
+                      (data.evidence_summary.extra_distance_m /
+                        data.baseline_route.metrics.total_length_m) *
+                      100
+                    ).toFixed(1)
+                    : 0,
+                dark_avoided_m: data.evidence_summary.unlit_meters_avoided,
+              }}
+              coverage={coverage}
+            />
+          )}
           <button className="use-route" onClick={() => setSelectedRoute('safe')}>Use this route <span>&rarr;</span></button>
         </div>
         <RouteComparison data={data} selected={selectedRoute} onSelect={setSelectedRoute} />
         <div className="compact-controls"><TimeControl hour={hour} onChange={setHour} /><DetourControl value={detour} onChange={setDetour} /></div>
         <UnknownPolicyControl policy={policy} onChange={setPolicy} />
-      </>}
+        </>
+      })()}
       <div className="panel-footer"><span className="status-indicator">{USE_MOCK_DATA ? 'LOCAL DEMO DATA' : 'LIVE DATA'}</span><span>Click a street for proof</span></div>
     </aside>
     <EvidencePanel evidence={selectedEvidence} onClose={() => setSelectedEvidence(null)} onAudited={handleAudited} />
