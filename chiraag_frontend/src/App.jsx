@@ -8,32 +8,48 @@ import { DetourControl } from './components/DetourControl'
 import { UnknownPolicy as UnknownPolicyControl } from './components/UnknownPolicy'
 import { EvidencePanel } from './components/EvidencePanel'
 import { MapView } from './components/MapView'
+import { MapSkeleton } from './components/MapSkeleton'
+import { useSheetDrag } from './lib/useSheetDrag'
 
 
-// Known-good pairs inside the ingested network, with coordinates baked in so
-// they never depend on a geocoding round-trip. Verify each against
-// find-demo-routes.ps1 before relying on them.
+// Known-good pairs inside the surveyed network, with coordinates baked in so
+// they never depend on a geocoding round-trip.
+//
+// These were selected by evaluating all 92 landmark pairs in the survey area
+// against the live scores: each one below produces a genuinely different and
+// measurably safer route, with enough evidence coverage to stand up to "how
+// much of this do you actually know?".
+//
+// The previous set was chosen before the network was rescored. Two of its
+// three journeys had since become identical to the shortest path -- India
+// Gate to Connaught Place returned 0 m avoided at 98% coverage, meaning the
+// shortest route there is genuinely already the best one. Good result,
+// terrible demo. Re-measure this list whenever the scores change.
+//
+//   India Gate -> Mandi House       451 m avoided,  +28 m,  74% observed
+//   Secretariat -> Gole Market      327 m avoided, +146 m,  60% observed
+//   Janpath -> Bangla Sahib         245 m avoided,  +68 m,  59% observed
 const PRESETS = [
   {
-    label: 'India Gate \u2192 CP',
+    label: 'India Gate \u2192 Mandi House',
     from: 'India Gate',
     fromCoords: { lat: 28.612945, lon: 77.229466 },
-    to: 'Connaught Place',
-    toCoords: { lat: 28.631540, lon: 77.216742 },
+    to: 'Mandi House',
+    toCoords: { lat: 28.6258, lon: 77.2344 },
   },
   {
-    label: 'Secretariat \u2192 Jantar Mantar',
+    label: 'Secretariat \u2192 Gole Market',
     from: 'Central Secretariat',
     fromCoords: { lat: 28.6152, lon: 77.2122 },
-    to: 'Jantar Mantar',
-    toCoords: { lat: 28.6271, lon: 77.2166 },
+    to: 'Gole Market',
+    toCoords: { lat: 28.6335, lon: 77.2065 },
   },
   {
-    label: 'Museum \u2192 Patel Chowk',
-    from: 'National Museum',
-    fromCoords: { lat: 28.6118, lon: 77.2194 },
-    to: 'Patel Chowk',
-    toCoords: { lat: 28.6236, lon: 77.2144 },
+    label: 'Janpath \u2192 Bangla Sahib',
+    from: 'Janpath',
+    fromCoords: { lat: 28.6242, lon: 77.2185 },
+    to: 'Bangla Sahib',
+    toCoords: { lat: 28.6262, lon: 77.2090 },
   },
 ]
 
@@ -69,6 +85,16 @@ export default function App() {
   const searchRequest = useRef(0)
   const searchTimer = useRef(null)
   const [refreshKey, setRefreshKey] = useState(0)
+
+  // Phones only -- the CSS keeps the form permanently open above 720px. On a
+  // small screen the search card and the results sheet between them leave a
+  // sliver of map, and the map is the product, so the form collapses to a bar
+  // showing the current journey until someone wants to change it.
+  const [searchOpen, setSearchOpen] = useState(false)
+
+  // Drag-to-collapse for the results sheet. Inert above 720px -- the class it
+  // applies has no styles outside the mobile block.
+  const sheet = useSheetDrag()
 
   useEffect(() => {
     if (!journey.fromCoords || !journey.toCoords) return
@@ -125,6 +151,7 @@ export default function App() {
     setToSuggestions([])
     setActiveSearch(null)
     setSelectedEvidence(null)
+    setSearchOpen(false)
 
     setJourney({
       from: preset.from,
@@ -299,6 +326,10 @@ export default function App() {
           lon: toLon,
         },
       })
+
+      // Collapse on success only. If the geocode failed the form stays open,
+      // because the next thing the user needs is to correct what they typed.
+      setSearchOpen(false)
     } catch (error) {
       console.error(error)
       setError(error.message)
@@ -307,7 +338,7 @@ export default function App() {
   }
 
   return <main className="app-shell">
-    {data && <MapView
+    {data ? <MapView
       data={data}
       selected={selectedRoute}
       selectedSegment={selectedEvidence?.road_id ?? null}
@@ -316,9 +347,34 @@ export default function App() {
       toCoords={journey.toCoords}
       fromName={journey.from}
       toName={journey.to}
-    />}
+    /> : !error && <MapSkeleton />}
     <Header />
-    <form className="route-search" onSubmit={findRoute} aria-label="Find a safer route">
+
+    {/* Hidden above 720px, where the form is always visible anyway. */}
+    <button
+      type="button"
+      className="search-toggle"
+      aria-expanded={searchOpen}
+      aria-controls="route-search-form"
+      onClick={() => setSearchOpen(open => !open)}
+    >
+      <span className="search-toggle-route">
+        <b>{journey.from}</b>
+        <i aria-hidden="true">&rarr;</i>
+        <b>{journey.to}</b>
+      </span>
+
+      <span className="search-toggle-action">
+        {searchOpen ? 'Close' : 'Change'}
+      </span>
+    </button>
+
+    <form
+      id="route-search-form"
+      className={searchOpen ? 'route-search open' : 'route-search'}
+      onSubmit={findRoute}
+      aria-label="Find a safer route"
+    >
       <div
         style={{
           display: 'flex',
@@ -495,7 +551,21 @@ export default function App() {
       </div>
       <button className="find-route" type="submit">Find safer route <span>&rarr;</span></button>
     </form>
-    <aside className="route-panel">
+    <aside
+      className={`route-panel ${sheet.className}`.trim()}
+      style={sheet.style}
+    >
+      {/* Hidden above 720px. Drag it down to get the map back, up to read
+          the detail; a tap toggles, for people who don't think to drag. */}
+      <button
+        type="button"
+        className="sheet-handle"
+        aria-expanded={!sheet.collapsed}
+        aria-label={
+          sheet.collapsed ? 'Expand route details' : 'Collapse route details'
+        }
+        {...sheet.handleProps}
+      />
       {loading && <div className="quiet-loading">Updating route <i /></div>}
       {error && (
         <div className="quiet-error">

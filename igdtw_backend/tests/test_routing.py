@@ -2,6 +2,7 @@ import networkx as nx
 
 from app.services.routing import (
     find_optimal_route,
+    AVOID_UNKNOWN_WEIGHT,
     _calculate_edge_weight,
     _get_path_metrics,
     _path_geometry,
@@ -72,7 +73,7 @@ def test_unknown_segment_is_not_priced_as_dark():
 
 
 def test_avoid_policy_penalises_unknown_segments():
-    """Under 'avoid', unknown roads take an additive penalty."""
+    """Under 'avoid', unknown roads cost a multiple of their own length."""
     edge = _parallel(
         length_m=100.0,
         dark_fraction=None,
@@ -92,7 +93,12 @@ def test_avoid_policy_penalises_unknown_segments():
     )
 
     assert avoid > neutral
-    assert avoid == 1300.0
+
+    # Stated as the rule rather than a magic number, so tuning the weight does
+    # not silently invalidate the test. Previously this asserted 1300.0, which
+    # pinned the flat "+ 500 m" formula that penalised short streets far more
+    # harshly than long ones.
+    assert avoid == 100.0 * (1.0 + 2.0 * AVOID_UNKNOWN_WEIGHT)
 
 
 # --------------------------------------------------------------------------
@@ -235,6 +241,93 @@ def test_unknown_policy_avoid_prefers_the_known_road(unknown_graph):
         result["chiraag_route"]["metrics"]["total_length_m"]
         == 100.0
     )
+
+
+def _unknown_edge(length):
+    return _parallel(
+        length_m=length,
+        dark_fraction=None,
+        observation_state="unobserved",
+    )
+
+
+def test_avoid_penalty_scales_with_length():
+    """
+    A long unobserved street must cost proportionally more than a short one.
+
+    The original formula added a flat 500 m, so a 20 m link was penalised
+    about 18x while a 500 m road -- carrying twenty-five times as much unknown
+    exposure -- got away with roughly 2x. Same multiplier at every length now.
+    """
+    lam = 0.65
+    short = _calculate_edge_weight(_unknown_edge(20.0), lam=lam, unknown_policy="avoid")
+    long_ = _calculate_edge_weight(_unknown_edge(500.0), lam=lam, unknown_policy="avoid")
+
+    assert abs((short / 20.0) - (long_ / 500.0)) < 1e-9
+    assert long_ > short
+
+
+def test_the_three_policies_are_actually_distinct():
+    """
+    Each stance must price an unobserved street differently.
+
+    'show_gaps' used to occupy this slot and was byte-for-byte identical to
+    neutral, so selecting it in the UI changed precisely nothing.
+    """
+    lam = 0.65
+    edge = _unknown_edge(100.0)
+
+    neutral = _calculate_edge_weight(edge, lam=lam, unknown_policy="neutral")
+    typical = _calculate_edge_weight(edge, lam=lam, unknown_policy="assume_typical")
+    avoid = _calculate_edge_weight(edge, lam=lam, unknown_policy="avoid")
+
+    assert neutral == 100.0
+    assert neutral < typical < avoid
+
+
+def test_show_gaps_still_behaves_as_neutral_for_older_clients():
+    """
+    Deprecated alias: a front end deployed before the rename must not break.
+    """
+    edge = _unknown_edge(100.0)
+
+    assert (
+        _calculate_edge_weight(edge, lam=0.65, unknown_policy="show_gaps")
+        == _calculate_edge_weight(edge, lam=0.65, unknown_policy="neutral")
+    )
+
+
+def test_assume_typical_changes_which_route_wins():
+    """
+    The prior must be strong enough to matter and mild enough not to ban.
+
+    A known road 45% dark against an unobserved detour: neutral takes the
+    detour because it looks free, avoid refuses it outright, and
+    assume_typical prices it as an average street and picks the known road.
+    """
+    G = nx.MultiDiGraph()
+    A, MID, D = (0.0, 0.0), (0.0, 1.0), (1.0, 1.0)
+
+    for u, v, attrs in (
+        (A, D, dict(id=1, length_m=100.0, dark_fraction=0.45,
+                    observation_state="predicted")),
+        (A, MID, dict(id=2, length_m=60.0, dark_fraction=None,
+                      observation_state="unobserved")),
+        (MID, D, dict(id=3, length_m=60.0, dark_fraction=None,
+                      observation_state="unobserved")),
+    ):
+        G.add_edge(u, v, **attrs)
+        G.add_edge(v, u, **attrs)
+
+    def route(policy):
+        return find_optimal_route(
+            G=G, origin_coords=A, dest_coords=D,
+            alpha=1.30, unknown_policy=policy,
+        )["chiraag_route"]["metrics"]["total_length_m"]
+
+    assert route("neutral") == 120.0          # unobserved detour looks free
+    assert route("assume_typical") == 100.0   # priced as typical -> known road
+    assert route("avoid") == 100.0            # refused outright -> known road
 
 
 # --------------------------------------------------------------------------

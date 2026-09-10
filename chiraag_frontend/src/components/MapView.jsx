@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 
@@ -459,33 +459,14 @@ export function MapView({
           : 'Shortest route selected'}
       </div>
 
-      <div
-        style={{
-          position: 'absolute',
-          top: 16,
-          left: 16,
-          zIndex: 10,
-          display: 'flex',
-          gap: 6,
-          background: 'rgba(255,255,255,0.96)',
-          padding: 4,
-          borderRadius: 8,
-          boxShadow: '0 2px 10px rgba(0,0,0,0.14)',
-        }}
-      >
+      {/* Styled in globals.css rather than inline, so the mobile layout can
+          move it -- an inline style cannot be overridden by a media query. */}
+      <div className="basemap-toggle">
         <button
           type="button"
+          className={satellite ? '' : 'active'}
           onClick={() => {
             if (satellite) switchStyle()
-          }}
-          style={{
-            border: 'none',
-            borderRadius: 6,
-            padding: '7px 11px',
-            background: !satellite ? '#222522' : 'transparent',
-            color: !satellite ? '#fff' : '#222522',
-            fontWeight: 700,
-            cursor: 'pointer',
           }}
         >
           Map
@@ -493,17 +474,9 @@ export function MapView({
 
         <button
           type="button"
+          className={satellite ? 'active' : ''}
           onClick={() => {
             if (!satellite) switchStyle()
-          }}
-          style={{
-            border: 'none',
-            borderRadius: 6,
-            padding: '7px 11px',
-            background: satellite ? '#222522' : 'transparent',
-            color: satellite ? '#fff' : '#222522',
-            fontWeight: 700,
-            cursor: 'pointer',
           }}
         >
           Satellite
