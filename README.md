@@ -1,344 +1,345 @@
+<div align="center">
+
 # CHIRAAG
 
-**Safer walking routes after dark, backed by evidence you can inspect.**
+### Evidence-backed walking routes for people travelling after dark
 
-CHIRAAG finds walking routes that avoid unlit stretches of road, and shows you
-why it made every choice. Click any street on the map and it tells you how much
-of that street is covered by detected street lights, how long the longest dark
-gap is, and where that evidence came from.
+[**Try the live prototype**](https://chiraag-1hbj.vercel.app/) · [**View the repository**](https://github.com/ShubhiDixit09/CHIRAAG)
 
-Crucially, it distinguishes **"we measured this street and it is dark"** from
-**"we have no imagery here."** A street with no evidence is never scored as
-dark, never counted toward a safety claim, and is drawn with hatching on the
-map so you can see where the data runs out.
+![React 19](https://img.shields.io/badge/React-19-20232A?logo=react&logoColor=61DAFB)
+![FastAPI](https://img.shields.io/badge/FastAPI-API-05998B?logo=fastapi&logoColor=white)
+![PostGIS](https://img.shields.io/badge/PostGIS-Spatial_DB-336791?logo=postgresql&logoColor=white)
+![NetworkX](https://img.shields.io/badge/NetworkX-Dijkstra-CB7B00)
+![Live](https://img.shields.io/badge/Prototype-Live-2E7D32)
 
-Built for Smart India Hackathon. Pilot area: central New Delhi.
+**Team 0xPredators · Central Delhi pilot**
 
----
-
-## What it does
-
-Give it an origin and a destination and it returns two routes:
-
-- **Shortest** — plain distance, the route you would walk anyway
-- **CHIRAAG / safer** — minimises unlit exposure, within a detour budget you set
-
-Plus an evidence summary: how many metres of unlit road the safer route avoids,
-how much extra walking that costs, and what percentage of the route we actually
-have lighting data for.
-
-A real result from the pilot area, India Gate to Connaught Place:
-
-| | distance | unlit road | observed |
-|---|---|---|---|
-| Shortest | 3,287 m | 238 m | 73% |
-| CHIRAAG | 3,302 m | 133 m | 77% |
-
-**105 m less unlit road for 15 m of extra walking.**
+</div>
 
 ---
+
+## The problem
+
+Most navigation systems optimise distance and travel time. After dark, the shortest path may also carry the greatest exposure to unlit streets.
+
+CHIRAAG compares the normal shortest route with a lower-exposure alternative and keeps that alternative inside a detour limit chosen by the user. It also exposes the evidence behind each road segment instead of presenting an unexplained safety score.
+
+It is designed for anyone who regularly moves through the city at night, including night-shift workers, delivery partners, students, women and late-night commuters.
+
+> **Current demo result:** 245 m of unlit road avoided for 68 m of additional walking.
+
+## What CHIRAAG does
+
+- Shows the **shortest route** and the **CHIRAAG route** together on the map.
+- Measures **unlit metres** and the **longest continuous dark gap**, rather than relying on lamp counts alone.
+- Lets the user set the **time of day** and a **maximum detour budget**.
+- Keeps **observed darkness** separate from **missing evidence**.
+- Marks unsurveyed stretches as unknown instead of silently calling them safe.
+- Makes road segments clickable so users can inspect `dark_fraction`, `longest_gap_m` and `observation_state`.
+- Accepts ground-truth night audits that override inferred lighting values.
+
+## Five core differentiators
+
+| Differentiator | Why it matters |
+|---|---|
+| **Unlit metres, not lamp counts** | Evenly spaced lights and clustered lights create very different walking conditions. CHIRAAG measures the road actually left uncovered. |
+| **Dark is different from unknown** | A surveyed dark street and an unsurveyed street are shown and handled differently. |
+| **Safety within a detour budget** | The router lowers exposure without sending the user on an impractically long walk. |
+| **Inspectable route evidence** | Every coloured road segment can be traced back to its lighting metrics and observation state. |
+| **Night-audit calibration** | Human observations can correct machine-derived estimates and take priority on the next route request. |
+
+## Verified pilot results
+
+The evaluation used **50 randomly selected journeys**, each 500 m to 2.5 km apart, routed at 23:00 through the deployed engine.
+
+| Metric | Result |
+|---|---:|
+| Journeys tested | **50** |
+| Journeys with a lower-exposure alternative | **36 of 50 (72%)** |
+| Journeys where the shortest route was already least exposed | **14 of 50 (28%)** |
+| Median unlit street avoided | **136 m** |
+| Median additional walking | **28 m** |
+| Dark street avoided per extra metre walked | **4.9 : 1** |
+| Maximum permitted detour | **20%** |
+
+These are aggregate test results. The 245 m and 68 m figures shown above are the selected demo journey, not the median journey.
+
+## Evidence coverage
+
+| Evidence item | Current pilot |
+|---|---:|
+| Walkable road segments | **3,970** |
+| Human-audited segments | **22** |
+| Evidence-scored segments | **2,206** |
+| Segments carrying lighting evidence | **2,228 (56.1%)** |
+| Segments not yet surveyed | **1,742** |
+| Street lights ingested | **7,120** |
+| Human audit records | **28** |
+| Routable coverage area | **11.42 km²** |
+| Unlit share of surveyed street | **24.6%** |
+| Spatial projection used for measurement | **EPSG:32643 (UTM 43N)** |
 
 ## How it works
 
-```
-OpenStreetMap  ──┐
-                 ├──► snap lights to roads ──► merge lit intervals ──► score
-Mapillary     ──┘         (25 m radius)          (±25 m per light)      │
-street-light                                                            ▼
-detections                                                      PostGIS: road_segments
-                                                                        │
-                                                                        ▼
-                                                    NetworkX graph ──► λ-sweep Dijkstra
-                                                                        │
-                                                                        ▼
-                                                                   two routes + evidence
+```mermaid
+flowchart LR
+    A[OpenStreetMap streets] --> C[Offline geospatial pipeline]
+    B[Mapped street lights and field audits] --> C
+    C --> D[PostGIS road segments]
+    D --> E[NetworkX weighted graph]
+    E --> F[Shortest route and CHIRAAG route]
+    D --> G[Clickable segment evidence]
 ```
 
-**Scoring.** Each street light is treated as lighting a ±25 m stretch of the
-road it snaps to. Overlapping stretches merge, and what is left over becomes
-`dark_fraction` and `longest_gap_m`.
+### 1. Build the street network
 
-**Routing.** Edge cost is `length + λ · (dark_fraction · length)`. The router
-runs Dijkstra at λ=0 for the baseline, then sweeps λ ∈ {0.5, 1, 2, 5, 10, 20},
-discards any candidate longer than `alpha × baseline`, and keeps the one with
-the lowest unlit exposure.
+OSMnx downloads walkable OpenStreetMap geometry. GeoPandas and Shapely process the network in metres using EPSG:32643.
 
-**Unknown handling.** Segments with no imagery are never assigned a
-`dark_fraction`. Under the `neutral` policy they cost plain distance; under
-`avoid` they take an additive penalty. They are never treated as dark.
+### 2. Attach lighting evidence
 
-**Time of day.** The hour applies a bounded multiplier to the safety search —
-1.00× during daylight, 1.15× from 19:00, 1.30× from 22:00. It makes routing
-more conservative at night; it does not alter the stored evidence.
+Mapped street lights are associated with roads within 25 m. Each light is treated as covering a 25 m interval on either side. Overlapping intervals are merged before calculating:
 
----
+- `dark_fraction`: the share of the segment estimated to be unlit
+- `longest_gap_m`: the longest continuous uncovered stretch
+- `observation_state`: whether the segment is audited, evidence-scored or unobserved
 
-## Repository layout
+### 3. Route over exposure
 
-```
-chiraag_frontend/     React 19 + Vite + MapLibre GL
-igdtw_backend/
-  app/                FastAPI service (read-only over PostGIS)
-    models/           SQLAlchemy models
-    routers/          /api/v1/route, /api/v1/evidence
-    schemas/          Pydantic request/response models
-    services/         graph_builder, routing
-  pipeline/           Offline ingestion and scoring (not used at request time)
-  tests/              pytest
+For an observed road segment:
+
+```text
+route cost = length + λ × dark_fraction × length
 ```
 
-The API never fetches or scores anything. The pipeline is a batch job that
-populates the database; the API only reads it.
+NetworkX runs Dijkstra on this weighted graph. The normal shortest route uses distance only. The CHIRAAG route adds an exposure penalty, then accepts the result only when it remains inside the user's detour cap `α`.
 
----
+Time changes how strongly the router penalises darkness:
 
-## Running locally
+| Local time | Weighting factor |
+|---|---:|
+| 06:00 to 18:59 | `1.00×` |
+| 19:00 to 21:59 | `1.15×` |
+| 22:00 to 05:59 | `1.30×` |
+
+The time factor affects routing decisions. It does not rewrite the stored street evidence.
+
+### 4. Handle missing evidence honestly
+
+CHIRAAG offers four user-facing treatments for streets with no lighting data:
+
+| Policy | Behaviour |
+|---|---|
+| `avoid` | Heavily penalises unsurveyed streets and uses them only when necessary. |
+| `neutral` | Uses distance alone and makes no lighting assumption. |
+| `assume_typical` | Applies the measured network prior of 25% unlit. |
+| `show_gaps` | Maintained as a compatibility alias for neutral while the interface highlights evidence gaps. |
+
+Unknown distance remains separate from measured unlit distance in route metrics and safety claims.
+
+## System architecture
+
+```mermaid
+flowchart TB
+    U[React 19 interface on Vercel] --> A[FastAPI service on Render]
+    A --> R[NetworkX routing engine]
+    A --> P[(Supabase PostgreSQL + PostGIS)]
+    I[Offline OSMnx and GeoPandas pipeline] --> P
+```
+
+The ingestion pipeline performs expensive geospatial work in advance. The request-time API reads precomputed segment scores from PostGIS and builds the routing graph for the requested area.
+
+## Technology stack
+
+| Layer | Technologies |
+|---|---|
+| Frontend | React 19, Vite, MapLibre GL, MapTiler, Turf.js |
+| API | FastAPI, Uvicorn, Pydantic |
+| Routing | NetworkX, weighted Dijkstra |
+| Database | PostgreSQL, PostGIS, SQLAlchemy, GeoAlchemy2 |
+| Pipeline | Python, OSMnx, GeoPandas, Shapely, pandas, NumPy |
+| Calibration | scikit-learn and human night-audit overrides |
+| Deployment | Vercel, Render, Supabase, Docker |
+
+## Repository structure
+
+```text
+CHIRAAG/
+├── chiraag_frontend/
+│   ├── public/
+│   └── src/
+│       ├── components/
+│       ├── fixtures/
+│       ├── lib/
+│       └── styles/
+├── igdtw_backend/
+│   ├── app/
+│   │   ├── models/
+│   │   ├── routers/
+│   │   ├── schemas/
+│   │   └── services/
+│   ├── pipeline/
+│   ├── scripts/
+│   ├── tests/
+│   ├── chiraag_data.sql
+│   └── docker-compose.yml
+└── README.md
+```
+
+## Run locally
 
 ### Prerequisites
 
 - Docker Desktop
-- Node.js 18+
-- A [MapTiler](https://www.maptiler.com/) API key (free tier is fine)
-- A [Mapillary](https://www.mapillary.com/dashboard/developer) access token,
-  only if you want to ingest fresh data
+- Node.js 18 or newer
+- A MapTiler API key for the live basemap and place search
+- A Mapillary access token only when ingesting fresh street-light data
 
-### 1. Backend
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/ShubhiDixit09/CHIRAAG.git
+cd CHIRAAG
+```
+
+### 2. Start the API and PostGIS
 
 ```bash
 cd igdtw_backend
-docker-compose up -d --build
+docker compose up -d --build
 ```
 
-This starts PostGIS on port 5434 and the API on port 8000. Tables are created
-automatically on first boot.
+This starts:
 
-Check it:
+- API: `http://localhost:8000`
+- Swagger documentation: `http://localhost:8000/docs`
+- PostGIS: `localhost:5434`
+
+Check the API:
 
 ```bash
 curl http://localhost:8000
 ```
 
-You should get `{"status":"online", ...}`. Interactive API docs are at
-`http://localhost:8000/docs`.
+### 3. Restore the included pilot dataset
 
-### 2. Load data
-
-The pipeline runs inside the API container.
-
-**Option A — restore the pilot dataset (fast).** `chiraag_data.sql` in
-`igdtw_backend/` holds the ingested central Delhi network:
+Run these commands from `igdtw_backend`:
 
 ```bash
-docker cp chiraag_data.sql igdtw_backend-db-1:/tmp/chiraag_data.sql
-docker-compose exec db psql -U chiraag -d chiraag -f /tmp/chiraag_data.sql
+docker compose cp chiraag_data.sql db:/tmp/chiraag_data.sql
+docker compose exec db psql -U chiraag -d chiraag -f /tmp/chiraag_data.sql
 ```
 
-**Option B — ingest fresh (slow, needs a Mapillary token).**
+Verify the loaded segment states:
 
 ```bash
-docker-compose exec api python -m pipeline.run_ingestion \
-  --lat 28.6180 --lon 77.2200 --radius 2500 \
-  --bbox "77.1944,28.5954,77.2456,28.6406" \
-  --mapillary-token "YOUR_TOKEN"
-```
-
-**`--radius` and `--bbox` must cover the same area.** `--radius` controls the
-OSM street pull (as a square of side `2 × radius`); `--bbox` controls the
-Mapillary light query. If the bbox is smaller, streets outside it can never be
-scored and coverage collapses. Derive the bbox from your ingested extent:
-
-```bash
-docker-compose exec db psql -U chiraag -d chiraag -t -c \
-  "SELECT ST_XMin(e)||','||ST_YMin(e)||','||ST_XMax(e)||','||ST_YMax(e)
-   FROM (SELECT ST_Extent(geom) AS e FROM road_segments) t;"
-```
-
-Verify whichever option you used:
-
-```bash
-docker-compose exec db psql -U chiraag -d chiraag -c \
+docker compose exec db psql -U chiraag -d chiraag -c \
   "SELECT observation_state, count(*) FROM road_segments GROUP BY 1;"
 ```
 
-### 3. Frontend
+### 4. Configure and start the frontend
+
+Open a second terminal:
 
 ```bash
-cd chiraag_frontend
+cd CHIRAAG/chiraag_frontend
 npm install
 ```
 
 Create `chiraag_frontend/.env`:
 
-```
+```env
+VITE_USE_MOCK_DATA=false
 VITE_API_URL=http://localhost:8000
 VITE_MAPTILER_KEY=your_maptiler_key
 ```
+
+Start Vite:
 
 ```bash
 npm run dev
 ```
 
-Open `http://localhost:5173`. It loads with a route already drawn — click a
-preset chip to try others, or type any place in central Delhi.
+Open `http://localhost:5173`.
 
-### 4. Tests
+> PowerShell may block `npm.ps1`. If that happens, use `npm.cmd install` and `npm.cmd run dev`.
+
+### 5. Run the backend tests
 
 ```bash
 cd igdtw_backend
-docker-compose exec api python -m pytest tests/ -q
+docker compose exec api python -m pytest tests/ -q
 ```
 
-15 tests. The routing tests need no database; only `test_api.py` does.
+## API example
 
----
+### Route request
 
-## Pipeline reference
-
-`python -m pipeline.run_ingestion [options]`
-
-| flag | purpose |
-|---|---|
-| `--lat` / `--lon` | Centre point for the OSM street pull. Preferred over `--place`. |
-| `--radius` | Half-width in metres of the OSM square. Default 1000. |
-| `--place` | Place name for OSMnx. Only works for names that resolve to a polygon boundary — landmarks like "Connaught Place" resolve to a point and will fail. |
-| `--bbox` | Mapillary query box, `minLon,minLat,maxLon,maxLat`. Required unless `--skip-lights`. |
-| `--mapillary-token` | Mapillary API token. Required unless `--skip-lights`. |
-| `--skip-osm` | Reuse existing streets. |
-| `--skip-lights` | Reuse existing lights. Use with `--skip-osm` to re-score only. |
-
-Re-running is safe. Streets are deduplicated in PostGIS with `ST_Equals`
-(direction-agnostic, so a street stored A→B matches an incoming B→A), and
-lights are deduplicated by `mapillary_id`. Mapillary occasionally returns HTTP
-500 for large boxes; the ingester retries by subdividing into quadrants.
-
----
-
-## API reference
-
-Base URL `http://localhost:8000`. Full interactive docs at `/docs`.
-
-### `POST /api/v1/route`
+```http
+POST /api/v1/route
+Content-Type: application/json
+```
 
 ```json
 {
-  "origin":      { "lat": 28.612945, "lon": 77.229466 },
+  "origin": { "lat": 28.612945, "lon": 77.229466 },
   "destination": { "lat": 28.631540, "lon": 77.216742 },
-  "alpha": 1.3,
-  "unknown_policy": "neutral",
+  "alpha": 1.20,
+  "unknown_policy": "assume_typical",
   "hour": 23
 }
 ```
 
-| field | default | notes |
-|---|---|---|
-| `alpha` | 1.20 | Detour cap, 1.0–2.0. 1.3 allows a 30% longer route. |
-| `unknown_policy` | `neutral` | `avoid`, `neutral`, or `show_gaps`. |
-| `hour` | 12 | 0–23. Applies the time-of-day weighting. |
+The response returns the baseline route, CHIRAAG route, per-segment evidence, coverage ratios, unlit metres avoided and additional walking distance.
 
-Response contains `baseline_route` and `chiraag_route`, each with:
+### Segment evidence
 
-- `nodes` — flat `[lon, lat]` polyline following the real street geometry
-- `segments` — per-street breakdown with `road_id`, `dark_fraction`,
-  `observation_state` and its own coordinates (this is what makes streets
-  clickable on the map)
-- `metrics` — `total_length_m`, `unlit_length_m`, `unknown_length_m`,
-  `dark_fraction`, `coverage_ratio`
+```http
+GET /api/v1/evidence/segment/{segment_id}
+```
 
-Plus `evidence_summary` with `unlit_meters_avoided`, `extra_distance_m` and
-`safety_gain_percent`.
+### Submit a night audit
 
-**Always read `coverage_ratio` alongside `unlit_length_m`.** A route with no
-observation returns `unlit_length_m: 0.0`, which means "we have not looked", not
-"there is no dark road". The frontend surfaces this; any other client should too.
-
-Returns **400** if an endpoint is more than 250 m from the nearest mapped
-street, or if no walking route exists between the two points.
-
-### `GET /api/v1/evidence/segment/{id}`
-
-Returns `road_id`, `length_m`, `dark_fraction`, `longest_gap_m`,
-`observation_state`. The last three are `null` for unobserved streets.
-
-### `POST /api/v1/evidence/audit`
+```http
+POST /api/v1/evidence/audit
+Content-Type: application/json
+```
 
 ```json
-{ "road_segment_id": 489, "rating": 2.0, "observed_light_count": 3 }
+{
+  "road_segment_id": 489,
+  "rating": 2.0,
+  "observed_light_count": 3
+}
 ```
 
-Records a ground-truth rating (0 = pitch dark, 5 = well lit) and recomputes
-that segment's `dark_fraction` as `1 - mean(rating)/5`. Ratings are averaged
-across all audits for the segment, so one outlier cannot flip a street.
-Audited evidence overrides imagery inference, and the change takes effect on
-the next route request.
+Ratings use a 0 to 5 scale, where 0 means pitch dark and 5 means well lit. Multiple audits are averaged, and audited values override imagery-derived estimates.
+
+## Current limitations
+
+- The current pilot covers **11.42 km²** in central Delhi, not the whole city.
+- **43.9%** of road segments remain unsurveyed and are shown as unknown.
+- The 25 m light radius is a modelling assumption, not a measurement of lamp output, height or road width.
+- Street-light proximity does not directly measure brightness, maintenance status, pedestrian activity or crime risk.
+- Light attribution is harder on divided roads, medians and service lanes.
+- CHIRAAG lowers measured lighting exposure. It does not guarantee personal safety.
+
+## Next steps
+
+- Ingest Mapillary image coverage separately from light detections so an imaged road with no visible lamps can be distinguished from a road with no imagery.
+- Improve light-to-road attribution on divided roads and service lanes.
+- Expand structured night audits and publish coverage quality by area.
+- Replace the fixed light radius with context from lamp type, road width and mounting height where data is available.
+
+## Data attribution
+
+- Street geometry: [OpenStreetMap](https://www.openstreetmap.org/) via OSMnx, licensed under ODbL
+- Street-light features: [Mapillary](https://www.mapillary.com/)
+- Basemap and geocoding: [MapTiler](https://www.maptiler.com/)
 
 ---
 
-## Known limitations
+<div align="center">
 
-Worth stating plainly rather than being asked.
+Built by **Team 0xPredators** for the Smart India Hackathon.
 
-**Coverage is 10% of the network.** 1,212 of 11,982 segments have lighting
-evidence. Per-route coverage is what matters and is often much higher — the
-pilot corridors run at 60–90% — but plenty of routes will honestly report
-"not enough data".
-
-**Darkness is only measurable where lights exist.** Because `dark_fraction`
-comes from detected lights, streets with no detections are unobserved rather
-than dark. A genuinely pitch-black street and a street with no Mapillary
-coverage are currently indistinguishable. Fixing this needs Mapillary *image
-coverage* ingested separately from *light detections*, so absence of lights in
-an imaged area can be scored as dark.
-
-**Light-to-road attribution is ambiguous on divided roads.** `sjoin_nearest`
-assigns each detection to one centreline, which over-attributes poles from
-medians and service lanes on wide avenues. This is why the evidence drawer
-reports lit coverage rather than a pole count. Network-wide the clustered
-density comes to 34.7 poles/km, which matches real urban street lighting.
-
-**The 25 m light radius is an assumption**, not a measurement. It is a
-reasonable figure for urban street lighting but it is not derived from lamp
-height, output, or road width.
-
-**Geographic scope is a 5 km box in central Delhi.** Requests outside it are
-rejected with an explanatory 400 rather than being silently snapped to the
-edge of the data.
-
----
-
-## Deployment
-
-The pilot runs on Vercel (frontend), Render (backend, Docker), and Supabase
-with PostGIS (database, Mumbai region).
-
-Backend environment variables:
-
-```
-POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
-POSTGRES_SSLMODE=require
-ALLOWED_ORIGINS_RAW=https://your-frontend.vercel.app
-```
-
-`ALLOWED_ORIGINS_RAW` is compared as an exact string — no trailing slash, and
-scheme included, or CORS preflight will fail with a 400.
-
-`DATABASE_URL_OVERRIDE` accepts a full connection string if your host provides
-one instead of separate values.
-
-Frontend build variables are `VITE_API_URL` and `VITE_MAPTILER_KEY`. Note that
-Vite inlines `VITE_`-prefixed values into the bundle, so the MapTiler key is
-visible to anyone who opens devtools — restrict it to your domain in the
-MapTiler dashboard.
-
----
-
-## Tech stack
-
-**Backend** FastAPI · SQLAlchemy · GeoAlchemy2 · PostGIS · NetworkX · Shapely
-**Pipeline** OSMnx · GeoPandas · Mapillary API
-**Frontend** React 19 · Vite · MapLibre GL · MapTiler
-
-## Data sources
-
-Street geometry from [OpenStreetMap](https://www.openstreetmap.org/) via OSMnx
-(ODbL). Street-light detections from [Mapillary](https://www.mapillary.com/)
-map features. Basemap tiles from [MapTiler](https://www.maptiler.com/).
+</div>
